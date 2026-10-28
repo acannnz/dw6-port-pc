@@ -5,11 +5,26 @@
 // supaya memori yang di-free bisa dipakai lagi -- game memang sering alloc+free untuk
 // mencari ukuran terbesar yang tersedia.
 #include <map>
+#define NOMINMAX
+#include <windows.h>
 #include "../kernel.h"
 
 static uint32_t AlignUp(uint32_t value, uint32_t alignment)
 {
     return (value + alignment - 1) & ~(alignment - 1);
+}
+
+bool GuestCommit(uint8_t* base, uint32_t address, uint32_t size)
+{
+    if (VirtualAlloc(base + address, size, MEM_COMMIT, PAGE_READWRITE) != nullptr)
+        return true;
+    printf("[mem] commit gagal: 0x%X (size 0x%X), error %lu\n", address, size, GetLastError());
+    return false;
+}
+
+void GuestDecommit(uint8_t* base, uint32_t address, uint32_t size)
+{
+    VirtualFree(base + address, size, MEM_DECOMMIT);
 }
 
 class RangeAllocator
@@ -40,11 +55,13 @@ public:
     }
 
     // Kembalikan rentang yang dimulai di `address`; gabungkan dengan tetangga yang kosong.
-    bool Free(uint32_t address)
+    // Hasil: ukuran rentang yang dibebaskan, atau 0 kalau `address` bukan hasil Allocate.
+    uint32_t Free(uint32_t address)
     {
         const auto used = m_used.find(address);
         if (used == m_used.end())
-            return false;
+            return 0;
+        const uint32_t freedSize = used->second;
         uint32_t start = address;
         uint32_t size = used->second;
         m_used.erase(used);
@@ -67,7 +84,7 @@ public:
             }
         }
         m_free[start] = size;
-        return true;
+        return freedSize;
     }
 
     bool Contains(uint32_t address) const { return m_used.count(address) != 0; }
@@ -83,15 +100,15 @@ private:
 static RangeAllocator g_virtual(0x40000000, 0x70000000);
 static RangeAllocator g_physical(0xA0000000, 0xC0000000);
 
-constexpr uint32_t MEM_RELEASE = 0x8000;
-constexpr uint32_t MEM_LARGE_PAGES = 0x20000000; // halaman 64 KB
-constexpr uint32_t MEM_16MB_PAGES = 0x40000000;
+constexpr uint32_t X_MEM_RELEASE = 0x8000;
+constexpr uint32_t X_MEM_LARGE_PAGES = 0x20000000; // halaman 64 KB
+constexpr uint32_t X_MEM_16MB_PAGES = 0x40000000;
 
 static uint32_t PageSize(uint32_t flags)
 {
-    if (flags & MEM_16MB_PAGES)
+    if (flags & X_MEM_16MB_PAGES)
         return 0x1000000;
-    if (flags & MEM_LARGE_PAGES)
+    if (flags & X_MEM_LARGE_PAGES)
         return 0x10000;
     return 0x1000;
 }
@@ -118,6 +135,11 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
         }
     }
 
+    if (!GuestCommit(base, address, size))
+    {
+        ctx.r3.u64 = X_STATUS_NO_MEMORY;
+        return;
+    }
     GuestStoreU32(base, pBase, address);
     GuestStoreU32(base, pSize, size);
     ctx.r3.u64 = X_STATUS_SUCCESS;
@@ -126,9 +148,14 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
 // NTSTATUS NtFreeVirtualMemory(void** BaseAddress, size_t* RegionSize, uint32_t FreeType, bool DebugMemory)
 PPC_FUNC(__imp__NtFreeVirtualMemory)
 {
-    // MEM_DECOMMIT cukup diabaikan (memori tetap ada); MEM_RELEASE mengembalikan rentangnya.
-    if (ctx.r5.u32 & MEM_RELEASE)
-        g_virtual.Free(GuestLoadU32(base, ctx.r3.u32));
+    // MEM_DECOMMIT cukup diabaikan (memori tetap ada); X_MEM_RELEASE mengembalikan rentangnya.
+    if (ctx.r5.u32 & X_MEM_RELEASE)
+    {
+        const uint32_t address = GuestLoadU32(base, ctx.r3.u32);
+        const uint32_t size = g_virtual.Free(address);
+        if (size != 0)
+            GuestDecommit(base, address, size);
+    }
     ctx.r3.u64 = X_STATUS_SUCCESS;
 }
 
@@ -140,6 +167,12 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
     const uint32_t size = AlignUp(ctx.r4.u32, pageSize);
     const uint32_t alignment = ctx.r8.u32 > pageSize ? ctx.r8.u32 : pageSize;
     const uint32_t address = g_physical.Allocate(size, alignment);
+    if (address != 0 && !GuestCommit(base, address, size))
+    {
+        g_physical.Free(address);
+        ctx.r3.u64 = 0;
+        return;
+    }
     if (address == 0)
         printf("[mem] MmAllocatePhysicalMemoryEx gagal: size=0x%X protect=0x%X align=0x%X\n", size, ctx.r5.u32, ctx.r8.u32);
     ctx.r3.u64 = address;
@@ -148,7 +181,9 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 // void MmFreePhysicalMemory(uint32_t Type, void* Address)
 PPC_FUNC(__imp__MmFreePhysicalMemory)
 {
-    g_physical.Free(ctx.r4.u32);
+    const uint32_t size = g_physical.Free(ctx.r4.u32);
+    if (size != 0)
+        GuestDecommit(base, ctx.r4.u32, size);
 }
 
 // uint32_t MmQueryAddressProtect(void* Address)

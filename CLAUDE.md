@@ -74,7 +74,11 @@ Tool-nya beda per konsol asal game:
 ## Runtime (mulai 2026-10-28) — folder `runtime/`
 - Build: `runtime/build_runtime.bat` → `runtime/build/DW6.exe` (clang-cl, Ninja; kode ppc pakai `-O1`).
   Jalankan dari root proyek: `runtime/build/DW6.exe private/default.xex`.
-- `main.cpp`: reserve+commit 4 GB memori guest, muat XEX via XenonUtils, isi tabel fungsi
+- Memori guest: 4 GB hanya **di-reserve**; commit lewat `GuestCommit` (image, tabel fungsi, stack, PCR,
+  setiap alokasi kernel) + **commit otomatis saat disentuh** (vectored exception handler, dicatat di log).
+  Alasan: commit 4 GB sekaligus memaksa Windows membesarkan pagefile (disk pengguna sempit).
+  Commit turun 4.105 MB → 230 MB. Akses otomatis yang terlihat: baca 0x93010000, tulis 0xBE010000 (selidiki).
+- `main.cpp`: memori guest (lihat atas), muat XEX via XenonUtils, isi tabel fungsi
   (`PPC_LOOKUP_FUNC`), r1 = stack guest 0x70000000 (1 MB), r13 = PCR palsu 0x7FF00000
   (PCR+0 → TLS 0x7FF02000, PCR+0x100 → thread 0x7FF01000), lalu panggil entry 0x8236C8C0.
   Crash handler mencetak exception + alamat guest.

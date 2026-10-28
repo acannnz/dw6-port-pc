@@ -18,6 +18,12 @@ constexpr uint32_t X_STATUS_NO_MEMORY = 0xC0000017;
 // Mencatat pemanggilan fungsi import yang belum diimplementasikan (lihat kernel/import_stubs.cpp).
 void LogStubCall(const char* name, const PPCContext& ctx);
 
+// Memori guest hanya di-reserve (4 GB ruang alamat) di main.cpp; area yang dipakai harus
+// di-commit dulu supaya bisa dibaca/ditulis. Akses ke area yang belum di-commit = crash
+// dengan alamat guest tercetak (membantu debugging). Didefinisikan di kernel/memory.cpp.
+bool GuestCommit(uint8_t* base, uint32_t address, uint32_t size);
+void GuestDecommit(uint8_t* base, uint32_t address, uint32_t size);
+
 // Baca/tulis memori guest (otomatis membalik byte big-endian <-> little-endian).
 inline uint16_t GuestLoadU16(uint8_t* base, uint32_t address)
 {

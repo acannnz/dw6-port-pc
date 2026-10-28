@@ -58,6 +58,29 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* info)
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// Commit otomatis: kalau game menyentuh halaman guest yang belum di-commit, commit halaman itu
+// (isinya nol) lalu lanjutkan. Alamatnya dicatat supaya akses "liar" tetap kelihatan di log.
+static LONG WINAPI CommitOnTouchHandler(EXCEPTION_POINTERS* info)
+{
+    const auto* record = info->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || g_base == nullptr)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    const auto address = static_cast<uintptr_t>(record->ExceptionInformation[1]);
+    const auto start = reinterpret_cast<uintptr_t>(g_base);
+    if (address < start || address >= start + PPC_MEMORY_SIZE)
+        return EXCEPTION_CONTINUE_SEARCH; // bukan memori guest: crash sungguhan
+
+    const auto guestPage = uint32_t(address - start) & ~0xFFFu;
+    if (!GuestCommit(g_base, guestPage, 0x1000))
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    static int logged = 0;
+    if (++logged <= 20)
+        printf("[mem] commit otomatis halaman guest 0x%08X (%s)\n", guestPage, record->ExceptionInformation[0] ? "tulis" : "baca");
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
 static bool LoadXex(const char* path, size_t& entryPoint)
 {
     const auto file = LoadFile(path);
@@ -79,6 +102,9 @@ static bool LoadXex(const char* path, size_t& entryPoint)
     for (const auto& section : image.sections)
         size = std::max(size, section.base + section.size - image.base);
 
+    // Commit seluruh ukuran image dari header (bisa lebih besar dari data, mis. untuk .bss).
+    if (!GuestCommit(g_base, uint32_t(image.base), std::max(uint32_t(size), image.size)))
+        return false;
     memcpy(g_base + image.base, image.data.get(), size);
     entryPoint = image.entry_point;
     printf("Image dimuat: 0x%zX-0x%zX, entry 0x%zX\n", image.base, image.base + size, entryPoint);
@@ -88,6 +114,8 @@ static bool LoadXex(const char* path, size_t& entryPoint)
 static size_t RegisterFunctions()
 {
     // Tabel lookup untuk pemanggilan tidak langsung (pointer fungsi, vtable C++).
+    // Letaknya tepat setelah image: 8 byte pointer host per 4 byte kode guest.
+    GuestCommit(g_base, uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE), uint32_t(PPC_CODE_SIZE * 2 + sizeof(PPCFunc*)));
     size_t count = 0;
     for (auto* mapping = PPCFuncMappings; mapping->host != nullptr; mapping++, count++)
         PPC_LOOKUP_FUNC(g_base, mapping->guest) = mapping->host;
@@ -98,14 +126,18 @@ int main(int argc, char** argv)
 {
     const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
     SetUnhandledExceptionFilter(CrashHandler);
+    AddVectoredExceptionHandler(1, CommitOnTouchHandler);
 
-    // 4 GB ruang alamat guest. Halaman baru benar-benar memakai RAM setelah disentuh.
-    g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, PPC_MEMORY_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    // 4 GB ruang alamat guest, hanya di-reserve (tidak memakan RAM/pagefile).
+    // Bagian yang dipakai di-commit lewat GuestCommit (di sini dan di kernel/memory.cpp).
+    g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, PPC_MEMORY_SIZE, MEM_RESERVE, PAGE_NOACCESS));
     if (g_base == nullptr)
     {
-        printf("Gagal mengalokasikan 4 GB memori guest (error %lu)\n", GetLastError());
+        printf("Gagal me-reserve 4 GB ruang alamat guest (error %lu)\n", GetLastError());
         return 1;
     }
+    GuestCommit(g_base, GUEST_STACK_BASE, GUEST_STACK_SIZE);
+    GuestCommit(g_base, GUEST_PCR, 0x3000); // PCR + thread + TLS
 
     size_t entryPoint = 0;
     if (!LoadXex(xexPath, entryPoint))

@@ -129,15 +129,17 @@ Tool-nya beda per konsol asal game:
     keyboard (WASD/panah/JKUI/Enter...). NtAllocateVirtualMemory hanya commit bila MEM_COMMIT.
   - GPU: register file + SCRATCH_REG fence writeback (UMSK 0x1DC, ADDR 0x1DD, REG0 0x578), REG_RMW,
     COND_WRITE, RPTR di MMIO 0x1C4.
-- **Status sekarang:** 3 video dilewati, game loop 60 FPS sampai ~1800-2100 frame (game mulai merender lewat
-  Direct3D-nya sendiri), lalu **thread utama terjebak di sub_823253B8 loop 0x82325864**: menelusuri linked
-  list [r23+116], tiap node {next, count, entri 8 byte}; node dengan count 0 → loop ~4 miliar kali menulis
-  ke seluruh memori (commit naik ke ~4 GB). Data struktur D3D (shader/state) rusak/salah lebih awal —
-  belum diketahui penyebabnya (curigai: instruksi vektor baru, fungsi Vd*/XGraphics yang masih stub,
-  atau GPU headless yang kurang).
-- **Berikutnya (urut):** (1) lacak asal node count=0 di list [r23+116] (r23 = argumen ke-2 sub_823253B8,
-  dipanggil dari sub_82185668); (2) jendela + backend render (D3D12/Vulkan) + XenosRecomp shader;
-  (3) output audio + XMA decoder (XMACreateContext masih stub); (4) save data; (5) pemutar video.
+- **Memori fisik di-alias (2026-10-28):** 0xA0000000/0xC0000000/0xE0000000 = 3 view dari SATU file mapping
+  512 MB (`ReserveGuestMemory` di main.cpp). Game menulis lewat satu jendela & membaca lewat jendela lain.
+  Ini yang dulu membuat state block D3D terbaca nol → loop sub_823253B8 tanpa akhir. GuestCommit/Decommit
+  mengabaikan alamat >= 0xA0000000.
+- **Status sekarang:** 3 video dilewati, game loop berjalan stabil (3900+ frame / 90 s, ~260 MB), membaca
+  BGM, membuat konteks XMA. **Belum ada jendela/gambar** (GPU headless), **belum ada suara**.
+  Tanda masalah tersisa: 1x tulis ke guest 0x00000000 (null pointer) setelah BGM dibuka.
+- **Berikutnya (urut):** (1) RENDER — keputusan arsitektur: pakai ulang GPU Xenia (BSD-3: command processor
+  + backend D3D12/Vulkan + penerjemah shader) atau tulis renderer sendiri à la Unleashed (XenosRecomp);
+  (2) audio: XMA decoder + output (XAudio2/WASAPI); (3) save data (NtCreateFile tulis, XamContent*);
+  (4) pemutar video (worker WMV menunggu Start()).
 
 ## Catatan tentang pengguna (untuk kalibrasi penjelasan)
 Developer web (PHP/Laravel/CI3, JavaScript). Baru di **C/C++, assembly, dan low-level** —

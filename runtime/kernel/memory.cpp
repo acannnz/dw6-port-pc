@@ -16,8 +16,14 @@ static uint32_t AlignUp(uint32_t value, uint32_t alignment)
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
+// Mulai 0xA0000000 adalah jendela memori fisik yang dipetakan permanen di main.cpp
+// (ReserveGuestMemory): selalu bisa dipakai, tidak perlu (dan tidak bisa) di-commit/decommit.
+constexpr uint32_t PHYSICAL_VIEWS_START = 0xA0000000;
+
 bool GuestCommit(uint8_t* base, uint32_t address, uint32_t size)
 {
+    if (address >= PHYSICAL_VIEWS_START)
+        return true;
     if (VirtualAlloc(base + address, size, MEM_COMMIT, PAGE_READWRITE) != nullptr)
         return true;
     printf("[mem] commit gagal: 0x%X (size 0x%X), error %lu\n", address, size, GetLastError());
@@ -26,7 +32,8 @@ bool GuestCommit(uint8_t* base, uint32_t address, uint32_t size)
 
 void GuestDecommit(uint8_t* base, uint32_t address, uint32_t size)
 {
-    VirtualFree(base + address, size, MEM_DECOMMIT);
+    if (address < PHYSICAL_VIEWS_START)
+        VirtualFree(base + address, size, MEM_DECOMMIT);
 }
 
 class RangeAllocator

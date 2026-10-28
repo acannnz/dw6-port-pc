@@ -90,13 +90,50 @@ static LONG WINAPI CommitOnTouchHandler(EXCEPTION_POINTERS* info)
         return EXCEPTION_CONTINUE_SEARCH; // bukan memori guest: crash sungguhan
 
     const auto guestPage = uint32_t(address - start) & ~0xFFFu;
-    if (!GuestCommit(g_base, guestPage, 0x1000))
+    // >= 0xA0000000 = jendela memori fisik (selalu ada, lihat ReserveGuestMemory): crash sungguhan.
+    if (guestPage >= 0xA0000000 || !GuestCommit(g_base, guestPage, 0x1000))
         return EXCEPTION_CONTINUE_SEARCH;
 
     static int logged = 0;
     if (++logged <= 20)
         printf("[mem] commit otomatis halaman guest 0x%08X (%s)\n", guestPage, record->ExceptionInformation[0] ? "tulis" : "baca");
     return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+// Tata letak 4 GB memori guest:
+//   0x00000000-0x9FFFFFFF  hanya di-reserve; di-commit sesuai kebutuhan (GuestCommit / commit otomatis)
+//   0xA0000000, 0xC0000000, 0xE0000000 (masing-masing 512 MB) = TIGA jendela ke RAM fisik yang SAMA.
+// Di Xbox 360 game bebas menulis lewat satu jendela lalu membaca lewat jendela lain (beda ukuran
+// halaman saja), jadi ketiganya dipetakan ke satu "file mapping" Windows yang sama.
+constexpr uint32_t PHYSICAL_VIEW_SIZE = 0x20000000;
+constexpr uint32_t PHYSICAL_VIEWS[] = { 0xA0000000, 0xC0000000, 0xE0000000 };
+
+static uint8_t* ReserveGuestMemory()
+{
+    HANDLE physical = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE | SEC_COMMIT, 0, PHYSICAL_VIEW_SIZE, nullptr);
+    if (physical == nullptr)
+        return nullptr;
+
+    // Cari 4 GB kosong, lepas lagi, lalu isi dengan reservasi + 3 view di alamat tetap.
+    // Bisa kalah cepat dengan alokasi lain di proses ini, jadi dicoba beberapa kali.
+    for (int attempt = 0; attempt < 8; attempt++)
+    {
+        auto* base = static_cast<uint8_t*>(VirtualAlloc(nullptr, PPC_MEMORY_SIZE, MEM_RESERVE, PAGE_NOACCESS));
+        if (base == nullptr)
+            return nullptr;
+        VirtualFree(base, 0, MEM_RELEASE);
+
+        bool ok = VirtualAlloc(base, PHYSICAL_VIEWS[0], MEM_RESERVE, PAGE_NOACCESS) == base;
+        for (const uint32_t view : PHYSICAL_VIEWS)
+            ok = ok && MapViewOfFileEx(physical, FILE_MAP_ALL_ACCESS, 0, 0, PHYSICAL_VIEW_SIZE, base + view) == base + view;
+        if (ok)
+            return base;
+
+        VirtualFree(base, 0, MEM_RELEASE);
+        for (const uint32_t view : PHYSICAL_VIEWS)
+            UnmapViewOfFile(base + view);
+    }
+    return nullptr;
 }
 
 static bool LoadXex(const char* path, size_t& entryPoint)
@@ -159,12 +196,10 @@ int main(int argc, char** argv)
     SetUnhandledExceptionFilter(CrashHandler);
     AddVectoredExceptionHandler(1, CommitOnTouchHandler);
 
-    // 4 GB ruang alamat guest, hanya di-reserve (tidak memakan RAM/pagefile).
-    // Bagian yang dipakai di-commit lewat GuestCommit (di sini dan di kernel/memory.cpp).
-    g_base = static_cast<uint8_t*>(VirtualAlloc(nullptr, PPC_MEMORY_SIZE, MEM_RESERVE, PAGE_NOACCESS));
+    g_base = ReserveGuestMemory();
     if (g_base == nullptr)
     {
-        printf("Gagal me-reserve 4 GB ruang alamat guest (error %lu)\n", GetLastError());
+        printf("Gagal menyiapkan 4 GB ruang alamat guest (error %lu)\n", GetLastError());
         return 1;
     }
 

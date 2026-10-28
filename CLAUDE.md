@@ -117,14 +117,27 @@ Tool-nya beda per konsol asal game:
     tercetak (`[fatal] ... ctr=`).
   - `sampler.cpp`: set `DW6_SAMPLE=<detik>` → cetak call stack semua thread (simbol sub_XXXXXXXX dari PDB,
     build pakai `-gline-tables-only` + `/DEBUG`) + daftar tunggu guest.
-- **Status sekarang:** CRT, memori, GPU init, 19 thread game, audio driver, input polling jalan; game membaca
-  LINKDATA.IDX/BIN, BGM, ikon. **Macet di video intro `movie\movie000.wmv`**: thread utama menunggu event
-  0x40F03F24 di sub_82392DE0; thread 17-19 (pipeline media, sub_82391A20/50/80) — thread 19 loop
-  KeSetEvent+KeWait di sub_823939D0. Membuat file video "tidak ada" TIDAK membantu (game mencoba ulang terus).
-- **Berikutnya (urut):** (1) cari kenapa pipeline video macet (mungkin butuh XMA audio decoder, XMACreateContext
-  masih stub, atau fence GPU); (2) jendela + backend render (D3D12/Vulkan) + XenosRecomp untuk shader —
-  belum ada gambar sama sekali; (3) output audio; (4) input (XamInputGetState masih stub); (5) save data.
-  section per-thread jadi wajib), event/semaphore (NtCreateEvent, KeWaitForSingleObject), lalu GPU.
+- Lanjutan (2026-10-28, sesi 3):
+  - NtSuspendThread sungguhan (suspend diri = tidur; thread lain berhenti di awal fungsi tunggu).
+  - `patches.cpp`: fungsi guest bisa ditimpa (`PPC_FUNC(sub_X)` strong vs weak hasil recompile;
+    asli via `extern "C" PPC_FUNC(__imp__sub_X)`). **Video intro dilewati**: sub_82382B00 (ambil frame
+    video) → 0x16660026 "video habis". Pipeline WMV macet karena worker (thread 17/19) suspend menunggu
+    Start() (vtable 0x8202B9C8 index 21) yang tak pernah dipanggil; `DW6_PLAY_MOVIES=1` untuk mencoba.
+  - XenonRecomp: + `vcmpbfp(128)` dan `vpkd3d128` tipe 3 (FLOAT16_2) → 0 `__builtin_debugtrap` tersisa.
+  - Crash handler & sampler mencetak call stack + file:baris C++ hasil recompile (cari komentar PPC di situ).
+  - `kernel/input.cpp`: XamInputGetState/Capabilities/SetState via XInput (layout tombol sama), cadangan
+    keyboard (WASD/panah/JKUI/Enter...). NtAllocateVirtualMemory hanya commit bila MEM_COMMIT.
+  - GPU: register file + SCRATCH_REG fence writeback (UMSK 0x1DC, ADDR 0x1DD, REG0 0x578), REG_RMW,
+    COND_WRITE, RPTR di MMIO 0x1C4.
+- **Status sekarang:** 3 video dilewati, game loop 60 FPS sampai ~1800-2100 frame (game mulai merender lewat
+  Direct3D-nya sendiri), lalu **thread utama terjebak di sub_823253B8 loop 0x82325864**: menelusuri linked
+  list [r23+116], tiap node {next, count, entri 8 byte}; node dengan count 0 → loop ~4 miliar kali menulis
+  ke seluruh memori (commit naik ke ~4 GB). Data struktur D3D (shader/state) rusak/salah lebih awal —
+  belum diketahui penyebabnya (curigai: instruksi vektor baru, fungsi Vd*/XGraphics yang masih stub,
+  atau GPU headless yang kurang).
+- **Berikutnya (urut):** (1) lacak asal node count=0 di list [r23+116] (r23 = argumen ke-2 sub_823253B8,
+  dipanggil dari sub_82185668); (2) jendela + backend render (D3D12/Vulkan) + XenosRecomp shader;
+  (3) output audio + XMA decoder (XMACreateContext masih stub); (4) save data; (5) pemutar video.
 
 ## Catatan tentang pengguna (untuk kalibrasi penjelasan)
 Developer web (PHP/Laravel/CI3, JavaScript). Baru di **C/C++, assembly, dan low-level** —

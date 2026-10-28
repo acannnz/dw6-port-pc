@@ -1,5 +1,5 @@
 diff --git a/XenonRecomp/recompiler.cpp b/XenonRecomp/recompiler.cpp
-index fa91527..4fdd903 100644
+index fa91527..abbcb89 100644
 --- a/XenonRecomp/recompiler.cpp
 +++ b/XenonRecomp/recompiler.cpp
 @@ -796,6 +796,19 @@ bool Recompiler::Recompile(
@@ -99,7 +99,29 @@ index fa91527..4fdd903 100644
      case PPC_INST_VCTSXS:
      case PPC_INST_VCFPSXWS128:
          printSetFlushMode(true);
-@@ -1877,6 +1932,26 @@ bool Recompiler::Recompile(
+@@ -1831,7 +1886,20 @@ bool Recompiler::Recompile(
+ 
+     case PPC_INST_VCMPBFP:
+     case PPC_INST_VCMPBFP128:
+-        println("\t__builtin_debugtrap();");
++        // Bounds compare: bit 31 = !(a <= b), bit 30 = !(a >= -b); NaN sets both bits.
++        printSetFlushMode(true);
++        println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_or_si128("
++            "simde_mm_andnot_si128(simde_mm_castps_si128(simde_mm_cmple_ps(simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32))), simde_mm_set1_epi32(int(0x80000000))), "
++            "simde_mm_andnot_si128(simde_mm_castps_si128(simde_mm_cmpge_ps(simde_mm_load_ps({}.f32), simde_mm_xor_ps(simde_mm_load_ps({}.f32), simde_mm_castsi128_ps(simde_mm_set1_epi32(int(0x80000000)))))), simde_mm_set1_epi32(0x40000000))));",
++            v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]), v(insn.operands[1]), v(insn.operands[2]));
++        if (strchr(insn.opcode->name, '.'))
++        {
++            // CR6: only the eq bit is used = all elements within bounds
++            println("\t{}.lt = 0;", cr(6));
++            println("\t{}.gt = 0;", cr(6));
++            println("\t{}.eq = simde_mm_testz_si128(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_load_si128((simde__m128i*){}.u32));", cr(6), v(insn.operands[0]), v(insn.operands[0]));
++            println("\t{}.so = 0;", cr(6));
++        }
+         break;
+ 
+     case PPC_INST_VCMPEQFP:
+@@ -1877,6 +1945,26 @@ bool Recompiler::Recompile(
  
      case PPC_INST_VCMPGTUH:
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_cmpgt_epu16(simde_mm_load_si128((simde__m128i*){}.u16), simde_mm_load_si128((simde__m128i*){}.u16)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
@@ -126,7 +148,7 @@ index fa91527..4fdd903 100644
          break;
  
      case PPC_INST_VEXPTEFP:
-@@ -1908,6 +1983,14 @@ bool Recompiler::Recompile(
+@@ -1908,6 +1996,14 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_ps({}.f32, simde_mm_max_ps(simde_mm_load_ps({}.f32), simde_mm_load_ps({}.f32)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
          break;
  
@@ -141,7 +163,39 @@ index fa91527..4fdd903 100644
      case PPC_INST_VMAXSW:
          println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_max_epi32(simde_mm_load_si128((simde__m128i*){}.u32), simde_mm_load_si128((simde__m128i*){}.u32)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
          break;
-@@ -2047,6 +2130,28 @@ bool Recompiler::Recompile(
+@@ -2036,6 +2132,31 @@ bool Recompiler::Recompile(
+             }
+             break;
+ 
++        case 3: // float16_2: (half(x) << 16) | half(y) into one word
++        {
++            if (insn.operands[3] != 1)
++                fmt::println("Unexpected float16_2 pack instruction at {:X}", base);
++
++            // Copy the source first in case the destination register is the same register.
++            println("\t{{");
++            println("\t\tPPCVRegister src = {};", v(insn.operands[1]));
++            // NOTE: accounting for full vector reversal: x = f32[3], y = f32[2];
++            // destination word u32[shift] = u16[2*shift+1] (high), u16[2*shift] (low)
++            constexpr size_t sourceIndex[] = { 2, 3 };
++            for (size_t k = 0; k < 2; k++)
++            {
++                const size_t i = sourceIndex[k];
++                const size_t out = 2 * insn.operands[4] + k;
++                println("\t\t{}.u32 = (src.u32[{}]&0x7FFFFFFF);", temp(), i);
++                println("\t\t{0}.u8[0] = ({1}.f32 != {1}.f32) || ({1}.f32 > 65504.0f) ? 0xFF : ((src.u32[{2}]&0x7f800000)>>23);", vTemp(), temp(), i);
++                println("\t\t{}.u16 = {}.u8[0] != 0xFF ? ((src.u32[{}]&0x7FE000)>>13) : 0x0;", temp(), vTemp(), i);
++                println("\t\t{0}.u16[{1}] = {2}.u8[0] != 0xFF ? ({2}.u8[0] > 0x70 ? ((({2}.u8[0]-0x70)<<10)+{3}.u16) : (0x71-{2}.u8[0] > 31 ? 0x0 : ((0x400+{3}.u16)>>(0x71-{2}.u8[0])))) : 0x7FFF;", v(insn.operands[0]), out, vTemp(), temp());
++                println("\t\t{}.u16[{}] |= ((src.u32[{}]&0x80000000)>>16);", v(insn.operands[0]), out, i);
++            }
++            println("\t}}");
++            break;
++        }
++
+         default:
+             println("\t__builtin_debugtrap();");
+             break;
+@@ -2047,6 +2168,28 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_packus_epi16(simde_mm_load_si128((simde__m128i*){}.s16), simde_mm_load_si128((simde__m128i*){}.s16)));", v(insn.operands[0]), v(insn.operands[2]), v(insn.operands[1]));
          break;
  
@@ -170,7 +224,7 @@ index fa91527..4fdd903 100644
      case PPC_INST_VREFP:
      case PPC_INST_VREFP128:
          // TODO: see if we can use rcp safely
-@@ -2091,12 +2196,27 @@ bool Recompiler::Recompile(
+@@ -2091,12 +2234,27 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_or_si128(simde_mm_andnot_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)), simde_mm_and_si128(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8))));", v(insn.operands[0]), v(insn.operands[3]), v(insn.operands[1]), v(insn.operands[3]), v(insn.operands[2]));
          break;
  
@@ -198,7 +252,7 @@ index fa91527..4fdd903 100644
      case PPC_INST_VSLDOI:
      case PPC_INST_VSLDOI128:
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_alignr_epi8(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8), {}));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]), 16 - insn.operands[3]);
-@@ -2130,6 +2250,10 @@ bool Recompiler::Recompile(
+@@ -2130,6 +2288,10 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_set1_epi8(char(0x{:X})));", v(insn.operands[0]), insn.operands[1]);
          break;
  
@@ -209,7 +263,7 @@ index fa91527..4fdd903 100644
      case PPC_INST_VSPLTISW:
      case PPC_INST_VSPLTISW128:
          println("\tsimde_mm_store_si128((simde__m128i*){}.u32, simde_mm_set1_epi32(int(0x{:X})));", v(insn.operands[0]), insn.operands[1]);
-@@ -2149,6 +2273,24 @@ bool Recompiler::Recompile(
+@@ -2149,6 +2311,24 @@ bool Recompiler::Recompile(
          println("\tsimde_mm_store_si128((simde__m128i*){}.u8, simde_mm_vsr(simde_mm_load_si128((simde__m128i*){}.u8), simde_mm_load_si128((simde__m128i*){}.u8)));", v(insn.operands[0]), v(insn.operands[1]), v(insn.operands[2]));
          break;
  
@@ -234,7 +288,7 @@ index fa91527..4fdd903 100644
      case PPC_INST_VSRAW:
      case PPC_INST_VSRAW128:
          // TODO: vectorize, ensure endianness is correct
-@@ -2178,6 +2320,14 @@ bool Recompiler::Recompile(
+@@ -2178,6 +2358,14 @@ bool Recompiler::Recompile(
          }
          break;
  

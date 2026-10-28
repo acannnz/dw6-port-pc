@@ -66,6 +66,32 @@ static void GpuWrite(uint8_t* base, uint32_t addressWithEndian, uint32_t value)
     *reinterpret_cast<uint32_t*>(base + address) = GpuSwap(value, addressWithEndian);
 }
 
+// --- Register GPU -------------------------------------------------------------------
+// Direct3D di Xbox 360 memakai register SCRATCH sebagai fence: kalau bit di SCRATCH_UMSK aktif,
+// setiap tulis ke SCRATCH_REGn juga disalin GPU ke memori di SCRATCH_ADDR + n*4 (big-endian).
+constexpr uint32_t REG_CP_RB_RPTR = 0x01C4;
+constexpr uint32_t REG_SCRATCH_UMSK = 0x01DC;
+constexpr uint32_t REG_SCRATCH_ADDR = 0x01DD;
+constexpr uint32_t REG_SCRATCH_REG0 = 0x0578;
+
+static uint32_t g_registers[0x10000];
+
+static void WriteRegister(uint8_t* base, uint32_t index, uint32_t value)
+{
+    index &= 0xFFFF;
+    g_registers[index] = value;
+    if (index >= REG_SCRATCH_REG0 && index < REG_SCRATCH_REG0 + 8)
+    {
+        const uint32_t scratch = index - REG_SCRATCH_REG0;
+        if (g_registers[REG_SCRATCH_UMSK] & (1u << scratch))
+        {
+            const uint32_t address = PhysicalToVirtual(g_registers[REG_SCRATCH_ADDR] + scratch * 4);
+            GuestCommit(base, address & ~0xFFFu, 0x1000);
+            GuestStoreU32(base, address, value);
+        }
+    }
+}
+
 // Jalankan paket PM4 di [address, address + dwords*4). Hanya perintah yang memengaruhi CPU
 // (tulis memori, fence, interrupt, indirect buffer) yang diproses.
 static void ExecutePackets(uint8_t* base, PPCContext& ctx, uint32_t address, uint32_t dwords, int depth = 0)
@@ -79,10 +105,16 @@ static void ExecutePackets(uint8_t* base, PPCContext& ctx, uint32_t address, uin
         if (type == 0) // tulis banyak register berurutan
         {
             const uint32_t count = ((header >> 16) & 0x3FFF) + 1;
+            const uint32_t firstRegister = header & 0x7FFF;
+            const bool sameRegister = (header >> 15) & 1; // semua nilai ke register yang sama
+            for (uint32_t k = 0; k < count; k++)
+                WriteRegister(base, sameRegister ? firstRegister : firstRegister + k, read(i + 1 + k));
             i += 1 + count;
         }
         else if (type == 1) // tulis 2 register
         {
+            WriteRegister(base, header & 0x7FF, read(i + 1));
+            WriteRegister(base, (header >> 11) & 0x7FF, read(i + 2));
             i += 3;
         }
         else if (type == 2) // NOP
@@ -113,6 +145,52 @@ static void ExecutePackets(uint8_t* base, PPCContext& ctx, uint32_t address, uin
             case 0x54: // INTERRUPT
                 CallInterrupt(base, ctx, 1);
                 break;
+            case 0x21: // REG_RMW: register = (register & and) | or
+            {
+                const uint32_t info = read(data), andMask = read(data + 1), orMask = read(data + 2);
+                uint32_t value = g_registers[info & 0x1FFF];
+                value &= (info >> 31) & 1 ? g_registers[andMask & 0x1FFF] : andMask;
+                value |= (info >> 30) & 1 ? g_registers[orMask & 0x1FFF] : orMask;
+                WriteRegister(base, info & 0x1FFF, value);
+                break;
+            }
+            case 0x45: // COND_WRITE: tulis register/memori kalau (nilai & mask) memenuhi syarat
+            {
+                const uint32_t info = read(data), pollAddress = read(data + 1);
+                const uint32_t reference = read(data + 2), mask = read(data + 3);
+                const uint32_t writeAddress = read(data + 4), writeData = read(data + 5);
+                uint32_t value;
+                if (info & 0x10) // dari memori
+                {
+                    const uint32_t raw = *reinterpret_cast<uint32_t*>(base + PhysicalToVirtual(pollAddress & ~3u));
+                    value = GpuSwap(raw, pollAddress);
+                }
+                else
+                {
+                    value = g_registers[pollAddress & 0xFFFF];
+                }
+                value &= mask;
+                bool matched;
+                switch (info & 7)
+                {
+                case 0: matched = false; break;
+                case 1: matched = value < reference; break;
+                case 2: matched = value <= reference; break;
+                case 3: matched = value == reference; break;
+                case 4: matched = value != reference; break;
+                case 5: matched = value >= reference; break;
+                case 6: matched = value > reference; break;
+                default: matched = true; break;
+                }
+                if (matched)
+                {
+                    if (info & 0x100)
+                        GpuWrite(base, writeAddress, writeData);
+                    else
+                        WriteRegister(base, writeAddress & 0xFFFF, writeData);
+                }
+                break;
+            }
             default:
                 break; // draw, state, tunggu register, dll.: diabaikan untuk sementara
             }
@@ -150,6 +228,8 @@ static void CommandProcessorThread(uint8_t* base)
         }
         readPointer = writePointer;
 
+        // Laporkan posisi baca juga di register MMIO, untuk kode yang membacanya langsung.
+        GuestStoreU32(base, GPU_MMIO_BASE + REG_CP_RB_RPTR * 4, readPointer);
         if (const uint32_t writeBack = g_rptrWriteBack)
             GuestStoreU32(base, writeBack, readPointer);
     }

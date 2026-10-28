@@ -1,9 +1,10 @@
-// Sampler debug: setiap beberapa detik, intip fungsi yang sedang dijalankan setiap thread
-// (lewat simbol PDB, mis. "sub_822EE040") lalu cetak ke log. Berguna untuk menemukan thread
-// yang berputar menunggu sesuatu tanpa memanggil kernel.
-// Aktif kalau variabel lingkungan DW6_SAMPLE diisi jumlah detik antar-sampel, mis. DW6_SAMPLE=10.
+// Alat debug berbasis simbol PDB (nama fungsi guest = sub_XXXXXXXX):
+//  - Sampler: setiap beberapa detik, cetak call stack semua thread + daftar tunggu guest.
+//    Aktif kalau variabel lingkungan DW6_SAMPLE diisi jumlah detik antar-sampel, mis. DW6_SAMPLE=10.
+//  - PrintCallStack: dipakai crash handler untuk mencetak call stack saat crash.
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <thread>
 #define NOMINMAX
@@ -12,8 +13,40 @@
 #include <tlhelp32.h>
 
 void DumpGuestWaits(uint8_t* base); // kernel/objects.cpp
-extern uint8_t* g_sampleBase;
-uint8_t* g_sampleBase = nullptr;
+static uint8_t* g_sampleBase = nullptr;
+
+// Cetak sampai 24 tingkat call stack mulai dari `context` (yang boleh diubah oleh StackWalk64).
+void PrintCallStack(HANDLE thread, CONTEXT& context)
+{
+    STACKFRAME64 frame{};
+    frame.AddrPC = { context.Rip, 0, AddrModeFlat };
+    frame.AddrFrame = { context.Rbp, 0, AddrModeFlat };
+    frame.AddrStack = { context.Rsp, 0, AddrModeFlat };
+    for (int depth = 0; depth < 24; depth++)
+    {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), thread, &frame, &context, nullptr,
+                SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || frame.AddrPC.Offset == 0)
+            break;
+        char buffer[sizeof(SYMBOL_INFO) + 256]{};
+        auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+        symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+        symbol->MaxNameLen = 255;
+        DWORD64 displacement = 0;
+        if (SymFromAddr(GetCurrentProcess(), frame.AddrPC.Offset, &displacement, symbol))
+        {
+            // Baris sumber C++ hasil recompile -> komentar instruksi PPC di dekatnya bisa dicari.
+            IMAGEHLP_LINE64 line{ sizeof(line) };
+            DWORD lineDisplacement = 0;
+            if (depth == 0 && SymGetLineFromAddr64(GetCurrentProcess(), frame.AddrPC.Offset, &lineDisplacement, &line))
+                printf(" %s(%s:%lu)", symbol->Name, strrchr(line.FileName, '\\') ? strrchr(line.FileName, '\\') + 1 : line.FileName, line.LineNumber);
+            else
+                printf(" %s", symbol->Name);
+        }
+        else
+            printf(" 0x%llX", frame.AddrPC.Offset);
+    }
+    printf("\n");
+}
 
 static void PrintThreadSymbols()
 {
@@ -35,28 +68,8 @@ static void PrintThreadSymbols()
         {
             if (GetThreadContext(thread, &context))
             {
-                // Telusuri beberapa tingkat call stack; fungsi guest bernama sub_XXXXXXXX.
-                STACKFRAME64 frame{};
-                frame.AddrPC = { context.Rip, 0, AddrModeFlat };
-                frame.AddrFrame = { context.Rbp, 0, AddrModeFlat };
-                frame.AddrStack = { context.Rsp, 0, AddrModeFlat };
                 printf("[sample] thread %5lu:", entry.th32ThreadID);
-                for (int depth = 0; depth < 24; depth++)
-                {
-                    if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), thread, &frame, &context, nullptr,
-                            SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || frame.AddrPC.Offset == 0)
-                        break;
-                    char buffer[sizeof(SYMBOL_INFO) + 256]{};
-                    auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
-                    symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-                    symbol->MaxNameLen = 255;
-                    DWORD64 displacement = 0;
-                    if (SymFromAddr(GetCurrentProcess(), frame.AddrPC.Offset, &displacement, symbol))
-                        printf(" %s", symbol->Name);
-                    else
-                        printf(" 0x%llX", frame.AddrPC.Offset);
-                }
-                printf("\n");
+                PrintCallStack(thread, context);
             }
             ResumeThread(thread);
         }
@@ -68,6 +81,11 @@ static void PrintThreadSymbols()
     fflush(stdout);
 }
 
+void InitDebugSymbols()
+{
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+}
+
 void StartSamplerIfRequested(uint8_t* base)
 {
     g_sampleBase = base;
@@ -75,7 +93,6 @@ void StartSamplerIfRequested(uint8_t* base)
     const int seconds = value ? atoi(value) : 0;
     if (seconds <= 0)
         return;
-    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
     std::thread([seconds] {
         while (true)
         {

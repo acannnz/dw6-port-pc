@@ -20,7 +20,10 @@
 
 static uint8_t* g_base = nullptr;
 
-void StartSamplerIfRequested(uint8_t* base); // sampler.cpp
+// sampler.cpp
+void StartSamplerIfRequested(uint8_t* base);
+void InitDebugSymbols();
+void PrintCallStack(HANDLE thread, CONTEXT& context);
 
 void LogStubCall(const char* name, const PPCContext& ctx)
 {
@@ -47,6 +50,9 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* info)
         printf("[crash] akses %s alamat host 0x%llX (guest 0x%llX)\n",
             record->ExceptionInformation[0] ? "tulis" : "baca", (unsigned long long)address, (unsigned long long)guest);
     }
+    printf("[crash] call stack:");
+    CONTEXT context = *info->ContextRecord;
+    PrintCallStack(GetCurrentThread(), context);
     fflush(stdout);
     return EXCEPTION_EXECUTE_HANDLER;
 }
@@ -149,6 +155,7 @@ int main(int argc, char** argv)
 {
     const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
     const char* isoPath = argc > 2 ? argv[2] : "private/Dynasty Warriors 6 (Europe).iso";
+    InitDebugSymbols();
     SetUnhandledExceptionFilter(CrashHandler);
     AddVectoredExceptionHandler(1, CommitOnTouchHandler);
 

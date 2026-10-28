@@ -22,4 +22,4 @@ add_executable(DW6 main.cpp sampler.cpp patches.cpp ${KERNEL_SOURCES})
 target_compile_options(DW6 PRIVATE -msse4.1 -gline-tables-only)
 # Simbol PDB (nama fungsi sub_XXXXXXXX) untuk sampler debug dan crash log.
 target_link_options(DW6 PRIVATE /DEBUG)
-target_link_libraries(DW6 PRIVATE DW6Recomp XenonUtils dbghelp)
+target_link_libraries(DW6 PRIVATE DW6Recomp XenonUtils dbghelp xinput)

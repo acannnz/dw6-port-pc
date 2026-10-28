@@ -161,7 +161,10 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
         }
     }
 
-    if (!GuestCommit(base, address, size))
+    // Hanya MEM_COMMIT yang benar-benar memakai memori. MEM_RESERVE saja cukup mencatat rentangnya;
+    // kalau game menyentuhnya tanpa commit, handler commit-otomatis di main.cpp menanganinya.
+    constexpr uint32_t X_MEM_COMMIT = 0x1000;
+    if ((ctx.r5.u32 & X_MEM_COMMIT) && !GuestCommit(base, address, size))
     {
         ctx.r3.u64 = X_STATUS_NO_MEMORY;
         return;

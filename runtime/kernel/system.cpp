@@ -1,6 +1,5 @@
-// Fungsi sistem dasar: info proses, hak akses, error fatal, TLS, critical section, string.
+// Fungsi sistem dasar: info proses, hak akses, error fatal, string.
 #include <cstring>
-#include <vector>
 #include "../kernel.h"
 
 PPC_FUNC(__imp__KeGetCurrentProcessType)
@@ -12,6 +11,24 @@ PPC_FUNC(__imp__KeGetCurrentProcessType)
 PPC_FUNC(__imp__XexCheckExecutablePrivilege)
 {
     ctx.r3.u64 = 0; // tidak punya hak istimewa apa pun
+}
+
+// uint32_t RtlNtStatusToDosError(NTSTATUS Status) -- kode NT -> kode error Win32
+PPC_FUNC(__imp__RtlNtStatusToDosError)
+{
+    switch (ctx.r3.u32)
+    {
+    case 0x00000000: ctx.r3.u64 = 0; break;    // ERROR_SUCCESS
+    case 0x00000102: ctx.r3.u64 = 1460; break; // ERROR_TIMEOUT
+    case 0x00000103: ctx.r3.u64 = 997; break;  // ERROR_IO_PENDING
+    case 0xC0000008: ctx.r3.u64 = 6; break;    // ERROR_INVALID_HANDLE
+    case 0xC000000D: ctx.r3.u64 = 87; break;   // ERROR_INVALID_PARAMETER
+    case 0xC0000011: ctx.r3.u64 = 38; break;   // ERROR_HANDLE_EOF
+    case 0xC0000017: ctx.r3.u64 = 8; break;    // ERROR_NOT_ENOUGH_MEMORY
+    case 0xC0000034: ctx.r3.u64 = 2; break;    // ERROR_FILE_NOT_FOUND
+    case 0xC000003A: ctx.r3.u64 = 3; break;    // ERROR_PATH_NOT_FOUND
+    default: ctx.r3.u64 = 31; break;           // ERROR_GEN_FAILURE
+    }
 }
 
 PPC_FUNC(__imp__KeBugCheck)
@@ -28,43 +45,6 @@ PPC_FUNC(__imp__HalReturnToFirmware)
 {
     GuestFatal("HalReturnToFirmware (game minta keluar/restart)", ctx);
 }
-
-// --- Thread Local Storage -------------------------------------------------
-// TODO: per-thread setelah ExCreateThread diimplementasikan; sekarang hanya 1 thread.
-static std::vector<uint32_t> g_tlsValues;
-
-PPC_FUNC(__imp__KeTlsAlloc)
-{
-    g_tlsValues.push_back(0);
-    ctx.r3.u64 = g_tlsValues.size() - 1;
-}
-
-PPC_FUNC(__imp__KeTlsFree)
-{
-    ctx.r3.u64 = 1;
-}
-
-PPC_FUNC(__imp__KeTlsGetValue)
-{
-    const uint32_t index = ctx.r3.u32;
-    ctx.r3.u64 = index < g_tlsValues.size() ? g_tlsValues[index] : 0;
-}
-
-PPC_FUNC(__imp__KeTlsSetValue)
-{
-    const uint32_t index = ctx.r3.u32;
-    if (index < g_tlsValues.size())
-        g_tlsValues[index] = ctx.r4.u32;
-    ctx.r3.u64 = index < g_tlsValues.size();
-}
-
-// --- Critical section -----------------------------------------------------
-// TODO: kunci sungguhan setelah ada multi-thread; selama baru 1 thread, cukup tanpa kunci.
-PPC_FUNC(__imp__RtlInitializeCriticalSection) {}
-PPC_FUNC(__imp__RtlInitializeCriticalSectionAndSpinCount) { ctx.r3.u64 = X_STATUS_SUCCESS; }
-PPC_FUNC(__imp__RtlEnterCriticalSection) {}
-PPC_FUNC(__imp__RtlLeaveCriticalSection) {}
-PPC_FUNC(__imp__RtlTryEnterCriticalSection) { ctx.r3.u64 = 1; }
 
 // --- String ---------------------------------------------------------------
 // struct ANSI_STRING { uint16_t Length; uint16_t MaximumLength; char* Buffer; }

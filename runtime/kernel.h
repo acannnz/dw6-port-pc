@@ -24,6 +24,10 @@ void LogStubCall(const char* name, const PPCContext& ctx);
 bool GuestCommit(uint8_t* base, uint32_t address, uint32_t size);
 void GuestDecommit(uint8_t* base, uint32_t address, uint32_t size);
 
+// Alokasi kecil untuk struktur milik "kernel" (objek thread, event, stack, PCR) di area
+// 0x71000000-0x7FEFFFFF. Hasil sudah di-commit dan diisi nol. 0 kalau habis.
+uint32_t GuestKernelAlloc(uint8_t* base, uint32_t size, uint32_t alignment = 0x10);
+
 // Baca/tulis memori guest (otomatis membalik byte big-endian <-> little-endian).
 inline uint16_t GuestLoadU16(uint8_t* base, uint32_t address)
 {
@@ -44,6 +48,56 @@ inline void GuestStoreU32(uint8_t* base, uint32_t address, uint32_t value)
 {
     *reinterpret_cast<uint32_t*>(base + address) = __builtin_bswap32(value);
 }
+
+inline uint64_t GuestLoadU64(uint8_t* base, uint32_t address)
+{
+    return __builtin_bswap64(*reinterpret_cast<uint64_t*>(base + address));
+}
+
+inline void GuestStoreU64(uint8_t* base, uint32_t address, uint64_t value)
+{
+    *reinterpret_cast<uint64_t*>(base + address) = __builtin_bswap64(value);
+}
+
+// --- Thread (kernel/threads.cpp) ---------------------------------------------
+struct GuestThreadState
+{
+    uint32_t id = 0;
+    uint32_t threadObject = 0; // KTHREAD di memori guest (juga jadi "pemilik" critical section)
+    uint32_t pcr = 0;          // nilai r13 thread ini
+    uint32_t tlsValues[64] = {}; // slot KeTlsAlloc
+};
+
+// Thread guest yang sedang berjalan di thread host ini.
+GuestThreadState& CurrentGuestThread();
+
+// Siapkan PCR/TLS/objek thread + stack untuk thread utama, lalu isi r1/r13 di ctx.
+void InitMainGuestThread(uint8_t* base, PPCContext& ctx);
+// Sama, untuk thread host milik runtime yang perlu memanggil kode guest (mis. callback interrupt GPU).
+void InitHostThreadAsGuest(uint8_t* base, PPCContext& ctx, uint32_t stackSize);
+
+// Frekuensi penghitung waktu (instruksi mftb diterjemahkan jadi __rdtsc()).
+uint64_t TimestampFrequency();
+
+// --- Objek dispatcher (kernel/objects.cpp) -----------------------------------
+// Event/semaphore/thread disimpan sebagai DISPATCHER_HEADER di memori guest:
+//   +0 u8 Type, +4 s32 SignalState, +8 daftar tunggu (tidak dipakai). Semaphore: +16 s32 Limit.
+constexpr uint8_t DISPATCHER_EVENT_NOTIFICATION = 0;
+constexpr uint8_t DISPATCHER_EVENT_SYNCHRONIZATION = 1;
+constexpr uint8_t DISPATCHER_SEMAPHORE = 5;
+constexpr uint8_t DISPATCHER_THREAD = 6;
+
+uint32_t CreateGuestHandle(uint32_t object);
+uint32_t GuestHandleToObject(uint32_t handle); // 0 kalau tidak ada
+// Set SignalState objek lalu bangunkan semua thread yang sedang menunggu.
+void SignalGuestObject(uint8_t* base, uint32_t object, int32_t state);
+
+// --- Sistem file (kernel/files.cpp) -------------------------------------------
+// Pasang ISO disc game supaya file "game:\..." bisa dibaca.
+bool MountIso(const char* path);
+
+constexpr uint32_t X_STATUS_TIMEOUT = 0x00000102;
+constexpr uint32_t X_STATUS_INVALID_HANDLE = 0xC0000008;
 
 // Error fatal dari sisi game (mis. KeBugCheck): cetak lalu keluar supaya terlihat jelas di log.
 [[noreturn]] inline void GuestFatal(const char* what, const PPCContext& ctx)

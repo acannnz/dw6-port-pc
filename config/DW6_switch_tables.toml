@@ -3872,3 +3872,43 @@ labels = [
     0x82198D88,
     0x82198D88,
 ]
+
+# ---- DITAMBAHKAN tools/find_missing_switches.py (switch absolut tanpa cmplwi) ----
+[[switch]]
+base = 0x822EE050  # jumlah kasus ditebak dari isi tabel (6)
+r = 4
+labels = [
+    0x822EE080,
+    0x822EE148,
+    0x822EE210,
+    0x822EE2E0,
+    0x822EE3A8,
+    0x822EE470,
+]
+
+[[switch]]
+base = 0x823F41E8  # jumlah kasus ditebak dari isi tabel (21)
+r = 19
+labels = [
+    0x823F4254,
+    0x823F4254,
+    0x823F43B0,
+    0x823F4254,
+    0x823F4254,
+    0x823F433C,
+    0x823F4254,
+    0x823F42C8,
+    0x823F4254,
+    0x823F4254,
+    0x823F43B0,
+    0x823F43B0,
+    0x823F4254,
+    0x823F4254,
+    0x823F43B0,
+    0x823F43B0,
+    0x823F43B0,
+    0x823F43B0,
+    0x823F4254,
+    0x823F4254,
+    0x823F4254,
+]

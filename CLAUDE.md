@@ -92,10 +92,38 @@ Tool-nya beda per konsol asal game:
   - `kernel/system.cpp`: KeGetCurrentProcessType=1, XexCheckExecutablePrivilege=0, TLS (1 thread),
     critical section no-op (1 thread), RtlInitAnsiString, KeBugCheck/HalReturnToFirmware → `GuestFatal`.
   - Konstanta status pakai prefix `X_STATUS_` (nama `STATUS_*` bentrok dengan makro winnt.h).
-- **Run terakhir:** lewat init CRT + alokasi memori + init GPU (`VdInitializeEngines`,
-  `VdInitializeRingBuffer` 0xC402000), lalu **hang (tidak crash) setelah stub `ExCreateThread`** —
-  kemungkinan menunggu thread yang tidak pernah dibuat, atau menunggu GPU membaca ring buffer.
-- **Berikutnya:** thread sungguhan (ExCreateThread → thread host + PPCContext sendiri, TLS & critical
+- Sudah diimplementasi juga (2026-10-28, lanjutan):
+  - `kernel/threads.cpp`: **thread sungguhan** (ExCreateThread → std::thread + PPCContext/stack/PCR
+    sendiri; XapiThreadStartup dipanggil kalau ada; CREATE_SUSPENDED + NtResumeThread/KeResumeThread;
+    ExTerminateThread lewat exception C++). TLS per thread, critical section sungguhan (CAS di
+    OwningThread +0x18), waktu (KeQueryPerformanceFrequency = frekuensi rdtsc terukur, karena `mftb`
+    diterjemahkan ke `__rdtsc()`), KeQuerySystemTime.
+  - **Affinity → PCR+0x10C (nomor hardware thread 0-5)**: dari CreationFlags>>24 dan KeSetAffinityThread.
+    WAJIB: game punya barrier multi-core (sub_8233E830) yang menunggu tiap core menandai byte-nya.
+  - **PENTING:** setiap PPCContext baru harus `ctx.fpscr.loadFromHost()`; kalau `csr` = 0, game mematikan
+    semua masker exception FP → crash 0xC000008F. Ada juga jaring pengaman di vectored handler.
+  - `kernel/objects.cpp`: event/semaphore/thread sebagai DISPATCHER_HEADER di memori guest (SignalState
+    +4 dibaca langsung), satu lock + condition variable global; handle table; Nt/Ke wait (single/multiple,
+    timeout). Catatan "siapa menunggu apa" dicetak sampler (`[wait] ...`).
+  - `kernel/gpu.cpp`: **GPU headless** — command processor membaca ring buffer sampai CP_RB_WPTR
+    (MMIO 0x7FC80000 + 0x1C5*4), menjalankan MEM_WRITE / EVENT_WRITE_SHD / INDIRECT_BUFFER / INTERRUPT,
+    RPtr writeback; vblank 60 Hz memanggil callback interrupt game; VdSwap = NOP + batas 60 FPS;
+    VdQueryVideoMode 1280x720. Spinlock & IRQL juga di sini. Alamat fisik → 0xA0000000 | phys.
+  - `kernel/files.cpp`: **filesystem langsung dari ISO** (XDVDFS, 207 entri), path `game:\...`:
+    NtCreateFile/NtOpenFile (baca saja), NtReadFile, NtQuery/SetInformationFile.
+  - `kernel/audio.cpp`: XAudio render driver — callback dipanggil tiap 5.33 ms; frame audio dibuang.
+  - `tools/find_missing_switches.py`: jump table absolut tanpa `cmplwi` yang terlewat XenonAnalyse
+    (2 ditemukan & ditambahkan). Tabel fungsi diisi `UnmappedFunction` → panggilan ke alamat tak dikenal
+    tercetak (`[fatal] ... ctr=`).
+  - `sampler.cpp`: set `DW6_SAMPLE=<detik>` → cetak call stack semua thread (simbol sub_XXXXXXXX dari PDB,
+    build pakai `-gline-tables-only` + `/DEBUG`) + daftar tunggu guest.
+- **Status sekarang:** CRT, memori, GPU init, 19 thread game, audio driver, input polling jalan; game membaca
+  LINKDATA.IDX/BIN, BGM, ikon. **Macet di video intro `movie\movie000.wmv`**: thread utama menunggu event
+  0x40F03F24 di sub_82392DE0; thread 17-19 (pipeline media, sub_82391A20/50/80) — thread 19 loop
+  KeSetEvent+KeWait di sub_823939D0. Membuat file video "tidak ada" TIDAK membantu (game mencoba ulang terus).
+- **Berikutnya (urut):** (1) cari kenapa pipeline video macet (mungkin butuh XMA audio decoder, XMACreateContext
+  masih stub, atau fence GPU); (2) jendela + backend render (D3D12/Vulkan) + XenosRecomp untuk shader —
+  belum ada gambar sama sekali; (3) output audio; (4) input (XamInputGetState masih stub); (5) save data.
   section per-thread jadi wajib), event/semaphore (NtCreateEvent, KeWaitForSingleObject), lalu GPU.
 
 ## Catatan tentang pengguna (untuk kalibrasi penjelasan)

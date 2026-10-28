@@ -4,7 +4,9 @@
 // "membagikan" rentang alamat. RangeAllocator menyimpan daftar rentang kosong (first-fit)
 // supaya memori yang di-free bisa dipakai lagi -- game memang sering alloc+free untuk
 // mencari ukuran terbesar yang tersedia.
+#include <cstring>
 #include <map>
+#include <mutex>
 #define NOMINMAX
 #include <windows.h>
 #include "../kernel.h"
@@ -95,10 +97,33 @@ private:
 };
 
 // Rentang alamat seperti di Xbox 360:
-//   0x40000000-0x6FFFFFFF  memori virtual (NtAllocateVirtualMemory); 0x70000000 dipakai stack (main.cpp)
+//   0x40000000-0x6FFFFFFF  memori virtual (NtAllocateVirtualMemory); 0x70000000-0x70FFFFFF cadangan
 //   0xA0000000-0xBFFFFFFF  memori fisik 512 MB (MmAllocatePhysicalMemoryEx), mis. untuk GPU
+//   0x71000000-0x7FEFFFFF  struktur kernel buatan runtime (GuestKernelAlloc)
 static RangeAllocator g_virtual(0x40000000, 0x70000000);
 static RangeAllocator g_physical(0xA0000000, 0xC0000000);
+static RangeAllocator g_kernel(0x71000000, 0x7FF00000);
+
+// Semua allocator dipakai dari banyak thread guest.
+static std::mutex g_memoryLock;
+
+uint32_t GuestKernelAlloc(uint8_t* base, uint32_t size, uint32_t alignment)
+{
+    std::lock_guard lock(g_memoryLock);
+    const uint32_t allocSize = AlignUp(size, 0x10);
+    const uint32_t address = g_kernel.Allocate(allocSize, alignment);
+    if (address == 0)
+    {
+        printf("[mem] GuestKernelAlloc gagal: size=0x%X\n", size);
+        return 0;
+    }
+    // Commit per halaman penuh; halaman yang sudah di-commit tidak masalah di-commit lagi.
+    const uint32_t first = address & ~0xFFFu;
+    const uint32_t last = AlignUp(address + allocSize, 0x1000);
+    GuestCommit(base, first, last - first);
+    memset(base + address, 0, allocSize);
+    return address;
+}
 
 constexpr uint32_t X_MEM_RELEASE = 0x8000;
 constexpr uint32_t X_MEM_LARGE_PAGES = 0x20000000; // halaman 64 KB
@@ -117,6 +142,7 @@ static uint32_t PageSize(uint32_t flags)
 //     uint32_t AllocationType, uint32_t Protect, bool DebugMemory)
 PPC_FUNC(__imp__NtAllocateVirtualMemory)
 {
+    std::lock_guard lock(g_memoryLock);
     const uint32_t pBase = ctx.r3.u32;
     const uint32_t pSize = ctx.r4.u32;
     const uint32_t pageSize = PageSize(ctx.r5.u32);
@@ -148,6 +174,7 @@ PPC_FUNC(__imp__NtAllocateVirtualMemory)
 // NTSTATUS NtFreeVirtualMemory(void** BaseAddress, size_t* RegionSize, uint32_t FreeType, bool DebugMemory)
 PPC_FUNC(__imp__NtFreeVirtualMemory)
 {
+    std::lock_guard lock(g_memoryLock);
     // MEM_DECOMMIT cukup diabaikan (memori tetap ada); X_MEM_RELEASE mengembalikan rentangnya.
     if (ctx.r5.u32 & X_MEM_RELEASE)
     {
@@ -163,6 +190,7 @@ PPC_FUNC(__imp__NtFreeVirtualMemory)
 //     uint32_t MinAddress, uint32_t MaxAddress, uint32_t Alignment)
 PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 {
+    std::lock_guard lock(g_memoryLock);
     const uint32_t pageSize = PageSize(ctx.r5.u32);
     const uint32_t size = AlignUp(ctx.r4.u32, pageSize);
     const uint32_t alignment = ctx.r8.u32 > pageSize ? ctx.r8.u32 : pageSize;
@@ -181,6 +209,7 @@ PPC_FUNC(__imp__MmAllocatePhysicalMemoryEx)
 // void MmFreePhysicalMemory(uint32_t Type, void* Address)
 PPC_FUNC(__imp__MmFreePhysicalMemory)
 {
+    std::lock_guard lock(g_memoryLock);
     const uint32_t size = g_physical.Free(ctx.r4.u32);
     if (size != 0)
         GuestDecommit(base, ctx.r4.u32, size);

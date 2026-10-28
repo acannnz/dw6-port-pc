@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 #define NOMINMAX
 #include <windows.h>
@@ -17,24 +18,16 @@
 
 #include "kernel.h"
 
-// Tata letak memori guest yang kita pilih sendiri (di luar area image game 0x82000000+).
-constexpr uint32_t GUEST_STACK_BASE = 0x70000000;
-constexpr uint32_t GUEST_STACK_SIZE = 0x100000; // 1 MB
-constexpr uint32_t GUEST_PCR = 0x7FF00000;      // Processor Control Region, ditunjuk register r13
-constexpr uint32_t GUEST_THREAD = 0x7FF01000;   // objek thread palsu
-constexpr uint32_t GUEST_TLS = 0x7FF02000;      // Thread Local Storage
-
 static uint8_t* g_base = nullptr;
 
-static void StoreGuestU32(uint32_t address, uint32_t value)
-{
-    *reinterpret_cast<uint32_t*>(g_base + address) = __builtin_bswap32(value);
-}
+void StartSamplerIfRequested(uint8_t* base); // sampler.cpp
 
 void LogStubCall(const char* name, const PPCContext& ctx)
 {
     // Cetak maksimal 5 kali per fungsi supaya log tidak banjir.
+    static std::mutex lock;
     static std::unordered_map<const char*, int> counts;
+    std::lock_guard guard(lock);
     if (++counts[name] <= 5)
     {
         printf("[stub] %s(r3=0x%llX, r4=0x%llX, r5=0x%llX) dari lr=0x%llX\n",
@@ -63,6 +56,25 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* info)
 static LONG WINAPI CommitOnTouchHandler(EXCEPTION_POINTERS* info)
 {
     const auto* record = info->ExceptionRecord;
+
+    // Jaring pengaman: exception floating-point (pembagian nol, hasil tidak presisi, dll.)
+    // tidak pernah terjadi di Xbox untuk game ini. Matikan semua lalu ulangi instruksinya.
+    switch (record->ExceptionCode)
+    {
+    case STATUS_FLOAT_DENORMAL_OPERAND:
+    case STATUS_FLOAT_DIVIDE_BY_ZERO:
+    case STATUS_FLOAT_INEXACT_RESULT:
+    case STATUS_FLOAT_INVALID_OPERATION:
+    case STATUS_FLOAT_OVERFLOW:
+    case STATUS_FLOAT_UNDERFLOW:
+    case STATUS_FLOAT_MULTIPLE_FAULTS:
+    case STATUS_FLOAT_MULTIPLE_TRAPS:
+        info->ContextRecord->MxCsr = (info->ContextRecord->MxCsr | 0x1F80) & ~0x3Fu;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    default:
+        break;
+    }
+
     if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || g_base == nullptr)
         return EXCEPTION_CONTINUE_SEARCH;
 
@@ -111,11 +123,22 @@ static bool LoadXex(const char* path, size_t& entryPoint)
     return true;
 }
 
+// Dipasang di semua slot tabel fungsi yang kosong: pemanggilan tidak langsung ke alamat guest
+// yang bukan awal fungsi hasil recompile (biasanya karena batas fungsi salah) langsung ketahuan.
+static void UnmappedFunction(PPCContext& __restrict ctx, uint8_t* base)
+{
+    printf("[fatal] panggilan ke alamat guest yang tidak dikenal: ctr=0x%08X (lr=0x%llX)\n", ctx.ctr.u32, ctx.lr);
+    fflush(stdout);
+    exit(3);
+}
+
 static size_t RegisterFunctions()
 {
     // Tabel lookup untuk pemanggilan tidak langsung (pointer fungsi, vtable C++).
     // Letaknya tepat setelah image: 8 byte pointer host per 4 byte kode guest.
     GuestCommit(g_base, uint32_t(PPC_IMAGE_BASE + PPC_IMAGE_SIZE), uint32_t(PPC_CODE_SIZE * 2 + sizeof(PPCFunc*)));
+    for (uint32_t address = PPC_CODE_BASE; address < PPC_CODE_BASE + PPC_CODE_SIZE; address += 4)
+        PPC_LOOKUP_FUNC(g_base, address) = UnmappedFunction;
     size_t count = 0;
     for (auto* mapping = PPCFuncMappings; mapping->host != nullptr; mapping++, count++)
         PPC_LOOKUP_FUNC(g_base, mapping->guest) = mapping->host;
@@ -125,6 +148,7 @@ static size_t RegisterFunctions()
 int main(int argc, char** argv)
 {
     const char* xexPath = argc > 1 ? argv[1] : "private/default.xex";
+    const char* isoPath = argc > 2 ? argv[2] : "private/Dynasty Warriors 6 (Europe).iso";
     SetUnhandledExceptionFilter(CrashHandler);
     AddVectoredExceptionHandler(1, CommitOnTouchHandler);
 
@@ -136,23 +160,20 @@ int main(int argc, char** argv)
         printf("Gagal me-reserve 4 GB ruang alamat guest (error %lu)\n", GetLastError());
         return 1;
     }
-    GuestCommit(g_base, GUEST_STACK_BASE, GUEST_STACK_SIZE);
-    GuestCommit(g_base, GUEST_PCR, 0x3000); // PCR + thread + TLS
 
     size_t entryPoint = 0;
     if (!LoadXex(xexPath, entryPoint))
         return 1;
     printf("%zu fungsi didaftarkan\n", RegisterFunctions());
+    if (!MountIso(isoPath))
+        return 1;
 
-    // r13 menunjuk ke PCR; kode game membaca thread aktif di PCR+0x100 dan TLS di PCR+0x0.
-    StoreGuestU32(GUEST_PCR + 0x0, GUEST_TLS);
-    StoreGuestU32(GUEST_PCR + 0x100, GUEST_THREAD);
-
+    // Thread utama: stack, PCR (r13) dan objek thread sendiri (lihat kernel/threads.cpp).
     PPCContext ctx{};
-    ctx.r1.u64 = GUEST_STACK_BASE + GUEST_STACK_SIZE - 0x100; // stack tumbuh ke bawah
-    ctx.r13.u64 = GUEST_PCR;
+    InitMainGuestThread(g_base, ctx);
     ctx.fpscr.loadFromHost();
 
+    StartSamplerIfRequested(g_base);
     printf("Memanggil entry point 0x%zX...\n", entryPoint);
     fflush(stdout);
     (PPC_LOOKUP_FUNC(g_base, entryPoint))(ctx, g_base);

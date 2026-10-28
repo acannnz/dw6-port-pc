@@ -145,3 +145,16 @@ Tool-nya beda per konsol asal game:
 Developer web (PHP/Laravel/CI3, JavaScript). Baru di **C/C++, assembly, dan low-level** —
 jelaskan konsep low-level pelan-pelan. Bahasa Inggris masih dasar; boleh bantu
 menerjemahkan dokumen/README berbahasa Inggris.
+## Proyek lain yang ditemukan (2026-10-28) — CEK INI DULU sebelum lanjut
+Pengguna memutuskan BERHENTI dulu dan menunggu port yang sudah jadi. Kalau dilanjutkan:
+- **DW6 belum punya port siap pakai** (per 2026-10-28).
+- **ReXGlue** (github.com/rexglue/rexglue-sdk): runtime + toolkit recomp Xbox 360 berbasis Xenia
+  (kernel, GPU D3D12/Vulkan "xenos" plugin, audio). Windows/Linux, belum Android. Jalur tercepat untuk DW6:
+  pindahkan proyek ini ke ReXGlue, pakai **dw5-empires-recomp** sebagai cetakan.
+- **dw5-empires-recomp** (github.com/TheSlackbringer/dw5-empires-recomp): DW5 Empires Xbox 360 PAL → PC via
+  ReXGlue; sudah ada render, BGM/suara, pemutar WMV. Game Koei/Omega Force seangkatan DW6.
+- **DW5-Android** (github.com/datfooldive/DW5-Android): DW5 Xbox ORIGINAL (USA) → Android via XboxXBE-Recomp.
+  ISO DW5 milik pengguna adalah versi PS2 Europe → tidak bisa dipakai.
+- **dw5xl-recomp**: DW5 Xtreme Legends PS2 → PC via PS2Recomp (game berbeda dari DW5 biasa).
+- Pelajaran: Black-Android cepat karena runtime XboxXBE-Recomp + port PC Black sudah jadi (TGP482);
+  XenonRecomp TIDAK menyediakan runtime. Selalu cari proyek/runtime yang sudah ada sebelum membangun dari nol.

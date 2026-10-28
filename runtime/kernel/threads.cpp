@@ -29,6 +29,16 @@ GuestThreadState& CurrentGuestThread()
     return t_thread;
 }
 
+struct HostThread
+{
+    std::mutex lock;
+    std::condition_variable resumed;
+    int suspendCount = 0;
+};
+
+static std::mutex g_threadsLock;
+static std::unordered_map<uint32_t, std::shared_ptr<HostThread>> g_threads; // KTHREAD -> host
+
 constexpr uint32_t PCR_CURRENT_PROCESSOR = 0x10C; // u8: nomor hardware thread (0-5) tempat thread berjalan
 
 // Peta KTHREAD -> PCR, supaya KeSetAffinityThread bisa mengubah nomor prosesor thread lain.
@@ -58,6 +68,13 @@ static void SetupGuestThread(uint8_t* base, PPCContext& ctx, uint32_t threadObje
         std::lock_guard lock(g_pcrLock);
         g_threadPcr[threadObject] = t_thread.pcr;
     }
+    {
+        // ExCreateThread sudah mendaftarkan HostThread-nya; thread lain (utama, runtime) didaftarkan di sini.
+        std::lock_guard lock(g_threadsLock);
+        auto& host = g_threads[threadObject];
+        if (!host)
+            host = std::make_shared<HostThread>();
+    }
 
     const uint32_t stack = GuestKernelAlloc(base, stackSize, 0x1000);
     ctx.r1.u64 = stack + stackSize - 0x100; // stack tumbuh ke bawah
@@ -85,16 +102,6 @@ void InitHostThreadAsGuest(uint8_t* base, PPCContext& ctx, uint32_t stackSize)
 }
 
 // --- Pembuatan thread -------------------------------------------------------
-
-struct HostThread
-{
-    std::mutex lock;
-    std::condition_variable resumed;
-    int suspendCount = 0;
-};
-
-static std::mutex g_threadsLock;
-static std::unordered_map<uint32_t, std::shared_ptr<HostThread>> g_threads; // KTHREAD -> host
 
 struct ThreadExit
 {
@@ -141,7 +148,7 @@ PPC_FUNC(__imp__ExCreateThread)
             host->resumed.wait(lock, [&] { return host->suspendCount <= 0; });
         }
 
-        printf("[thread] %u mulai di 0x%X (context 0x%X), thread Windows %lu\n", t_thread.id, startAddress, startContext, GetCurrentThreadId());
+        printf("[thread] %u (KTHREAD 0x%X) mulai di 0x%X (context 0x%X), thread Windows %lu\n", t_thread.id, threadObject, startAddress, startContext, GetCurrentThreadId());
         fflush(stdout);
         try
         {
@@ -184,6 +191,8 @@ PPC_FUNC(__imp__ExTerminateThread)
 
 static uint32_t ResumeThread(uint32_t threadObject)
 {
+    printf("[thread] %u resume thread 0x%X\n", t_thread.id, threadObject);
+    fflush(stdout);
     const auto host = FindThread(threadObject);
     if (!host)
         return 0;
@@ -210,13 +219,40 @@ PPC_FUNC(__imp__KeResumeThread)
     ctx.r3.u64 = ResumeThread(ctx.r3.u32);
 }
 
+// Tidur selama thread ini di-suspend. Dipanggil saat thread men-suspend dirinya sendiri, dan di
+// "titik aman" (awal fungsi tunggu kernel) untuk suspend yang diminta thread lain.
+void GuestSuspendCheckpoint()
+{
+    const auto host = FindThread(t_thread.threadObject);
+    if (!host)
+        return;
+    std::unique_lock lock(host->lock);
+    host->resumed.wait(lock, [&] { return host->suspendCount <= 0; });
+}
+
 // NTSTATUS NtSuspendThread(HANDLE Handle, uint32_t* SuspendCount)
+// Thread lain tidak bisa dihentikan paksa di tengah kode dengan aman, jadi suspend-nya baru berlaku
+// saat thread itu memanggil fungsi tunggu kernel berikutnya. Suspend diri sendiri langsung tidur.
 PPC_FUNC(__imp__NtSuspendThread)
 {
-    // TODO: menghentikan thread lain di tengah jalan tidak bisa dilakukan dengan aman di sini.
-    LogStubCall("NtSuspendThread", ctx);
+    const uint32_t object = GuestHandleToObject(ctx.r3.u32);
+    const auto host = FindThread(object);
+    if (!host)
+    {
+        ctx.r3.u64 = X_STATUS_INVALID_HANDLE;
+        return;
+    }
+    int previous;
+    {
+        std::lock_guard lock(host->lock);
+        previous = host->suspendCount++;
+    }
     if (ctx.r4.u32 != 0)
-        GuestStoreU32(base, ctx.r4.u32, 0);
+        GuestStoreU32(base, ctx.r4.u32, uint32_t(previous));
+    printf("[thread] %u suspend thread 0x%X (count %d) dari lr=0x%llX\n", t_thread.id, object, previous + 1, (unsigned long long)ctx.lr);
+    fflush(stdout);
+    if (object == t_thread.threadObject)
+        GuestSuspendCheckpoint();
     ctx.r3.u64 = X_STATUS_SUCCESS;
 }
 

@@ -18,7 +18,7 @@ target_include_directories(DW6Recomp PUBLIC ${PPC_DIR} ${PROJECT_ROOT}/tools/Xen
 target_compile_options(DW6Recomp PRIVATE -msse4.1 -Wno-everything /clang:-O1 -fno-strict-aliasing -gline-tables-only)
 
 file(GLOB KERNEL_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/kernel/*.cpp)
-add_executable(DW6 main.cpp sampler.cpp ${KERNEL_SOURCES})
+add_executable(DW6 main.cpp sampler.cpp patches.cpp ${KERNEL_SOURCES})
 target_compile_options(DW6 PRIVATE -msse4.1 -gline-tables-only)
 # Simbol PDB (nama fungsi sub_XXXXXXXX) untuk sampler debug dan crash log.
 target_link_options(DW6 PRIVATE /DEBUG)

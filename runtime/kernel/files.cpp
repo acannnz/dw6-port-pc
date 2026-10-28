@@ -27,6 +27,7 @@ struct IsoEntry
 
 struct OpenFile
 {
+    std::string name;
     const IsoEntry* entry = nullptr;
     uint64_t position = 0;
 };
@@ -178,6 +179,7 @@ static uint32_t OpenPath(uint8_t* base, uint32_t pHandle, uint32_t objectAttribu
     base[object] = 0xFF; // bukan objek dispatcher
     auto file = std::make_unique<OpenFile>();
     file->entry = &it->second;
+    file->name = name;
     g_open[object] = std::move(file);
     GuestStoreU32(base, pHandle, CreateGuestHandle(object));
     SetIoStatus(base, ioStatus, X_STATUS_SUCCESS, 1); // 1 = FILE_OPENED
@@ -210,6 +212,11 @@ PPC_FUNC(__imp__NtReadFile)
     const uint32_t length = ctx.r9.u32;
     const uint32_t pOffset = ctx.r10.u32;
 
+    static int logged = 0;
+    if (ctx.r5.u32 != 0 && logged++ < 10)
+        printf("[file] NtReadFile dengan APC routine 0x%X (context 0x%X), event 0x%X, panjang %u\n",
+            ctx.r5.u32, ctx.r6.u32, event, length);
+
     uint32_t status;
     uint32_t transferred = 0;
     {
@@ -234,6 +241,10 @@ PPC_FUNC(__imp__NtReadFile)
             for (uint32_t page = buffer & ~0xFFFu; page < buffer + transferred; page += 0x1000)
                 GuestCommit(base, page, 0x1000);
             ReadIso(file->entry->offset + file->position, base + buffer, transferred);
+            static int readsLogged = 0;
+            if (file->name.find("movie") != std::string::npos && readsLogged++ < 20)
+                printf("[file] baca %s offset 0x%llX panjang 0x%X -> 0x%X\n", file->name.c_str(),
+                    (unsigned long long)file->position, length, transferred);
             file->position += transferred;
             status = X_STATUS_SUCCESS;
         }

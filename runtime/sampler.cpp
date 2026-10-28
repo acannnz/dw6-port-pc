@@ -41,7 +41,7 @@ static void PrintThreadSymbols()
                 frame.AddrFrame = { context.Rbp, 0, AddrModeFlat };
                 frame.AddrStack = { context.Rsp, 0, AddrModeFlat };
                 printf("[sample] thread %5lu:", entry.th32ThreadID);
-                for (int depth = 0; depth < 8; depth++)
+                for (int depth = 0; depth < 24; depth++)
                 {
                     if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), thread, &frame, &context, nullptr,
                             SymFunctionTableAccess64, SymGetModuleBase64, nullptr) || frame.AddrPC.Offset == 0)

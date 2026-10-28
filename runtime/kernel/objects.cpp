@@ -140,6 +140,7 @@ void DumpGuestWaits(uint8_t* base)
 
 static uint32_t WaitForObjects(uint8_t* base, const uint32_t* objects, size_t count, bool waitAll, uint32_t pTimeout, uint64_t lr)
 {
+    GuestSuspendCheckpoint();
     const WaitRecordScope record(objects, count, lr);
     std::chrono::steady_clock::time_point deadline;
     const bool hasDeadline = DeadlineFromTimeout(base, pTimeout, deadline);
@@ -327,6 +328,7 @@ PPC_FUNC(__imp__KeWaitForMultipleObjects)
 // NTSTATUS KeDelayExecutionThread(uint8_t Mode, bool Alertable, int64_t* Interval)
 PPC_FUNC(__imp__KeDelayExecutionThread)
 {
+    GuestSuspendCheckpoint();
     int64_t interval = int64_t(GuestLoadU64(base, ctx.r5.u32));
     if (interval < 0)
         interval = -interval;

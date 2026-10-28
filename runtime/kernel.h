@@ -76,6 +76,9 @@ void InitMainGuestThread(uint8_t* base, PPCContext& ctx);
 // Sama, untuk thread host milik runtime yang perlu memanggil kode guest (mis. callback interrupt GPU).
 void InitHostThreadAsGuest(uint8_t* base, PPCContext& ctx, uint32_t stackSize);
 
+// Tidur selama thread ini di-suspend (NtSuspendThread dari thread lain). Dipanggil di awal fungsi tunggu.
+void GuestSuspendCheckpoint();
+
 // Frekuensi penghitung waktu (instruksi mftb diterjemahkan jadi __rdtsc()).
 uint64_t TimestampFrequency();
 

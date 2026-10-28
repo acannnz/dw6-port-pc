@@ -1,0 +1,73 @@
+# Konfigurasi XenonRecomp untuk Dynasty Warriors 6 (Xbox 360, Europe).
+# Semua path relatif terhadap folder file ini.
+# Jalankan: tools/build/XenonRecomp/XenonRecomp/XenonRecomp.exe config/DW6.toml tools/XenonRecomp/XenonUtils/ppc_context.h
+
+[main]
+file_path = "../private/default.xex"
+out_directory_path = "../private/ppc"
+switch_table_file_path = "DW6_switch_tables.toml"
+
+# Optimasi: biarkan semua false sampai hasil recompile sudah jalan.
+skip_lr = false
+skip_msr = false
+ctr_as_local = false
+xer_as_local = false
+reserved_as_local = false
+cr_as_local = false
+non_argument_as_local = false
+non_volatile_as_local = false
+
+# Fungsi save/restore register (dicari dengan tools/find_patterns.py).
+restgprlr_14_address = 0x824686C0
+savegprlr_14_address = 0x82468670
+restfpr_14_address = 0x82468D3C
+savefpr_14_address = 0x82468CF0
+restvmx_14_address = 0x8246A508
+savevmx_14_address = 0x8246A270
+restvmx_64_address = 0x8246A59C
+savevmx_64_address = 0x8246A304
+
+# longjmp = fungsi yang memanggil RtlUnwind (tools/find_callers.py);
+# setjmp = 0x320 byte sesudahnya (jarak sama persis dengan Sonic Unleashed).
+longjmp_address = 0x82469880
+setjmp_address = 0x82469BA0
+
+# Batas fungsi manual untuk fungsi berisi switch yang tidak punya entri .pdata.
+# Dihitung dengan tools/fix_switch_functions.py (menelusuri cabang + label switch).
+# 0x8230E2EC, 0x8230E5FC, 0x8238BF1C sengaja TIDAK dicantumkan: itu lanjutan dari
+# 0x8230E150, 0x8230E460, 0x8238BB60 (tidak dipanggil bl, tidak di .pdata, tidak dirujuk data).
+functions = [
+    { address = 0x82113DE0, size = 0x58 },
+    { address = 0x82186E40, size = 0xCC }, # switch manual di DW6_switch_tables.toml
+    { address = 0x82198D60, size = 0xA8 }, # switch manual di DW6_switch_tables.toml
+    { address = 0x82198E10, size = 0xF4 },
+    { address = 0x82198F08, size = 0xF4 },
+    { address = 0x82199000, size = 0x114 },
+    { address = 0x82199118, size = 0x1A8 },
+    { address = 0x821992C0, size = 0x1A8 },
+    { address = 0x82199468, size = 0x1D8 },
+    { address = 0x82199640, size = 0x210 },
+    { address = 0x8219AC28, size = 0x450 },
+    { address = 0x8226BC78, size = 0xD8 },
+    { address = 0x822CBF00, size = 0x108 },
+    { address = 0x822CDAF8, size = 0x108 },
+    { address = 0x822CFED0, size = 0x108 },
+    { address = 0x822FFE68, size = 0x210 },
+    { address = 0x82305E20, size = 0x15C },
+    { address = 0x82308ED8, size = 0xDC },
+    { address = 0x8230E150, size = 0x30C },
+    { address = 0x8230E460, size = 0x30C },
+    { address = 0x8230E770, size = 0x228 },
+    { address = 0x823144A8, size = 0x194 },
+    { address = 0x82323878, size = 0xEC },
+    { address = 0x8238B838, size = 0x11C },
+    { address = 0x8238BA90, size = 0xD0 },
+    { address = 0x8238BB60, size = 0x4D8 },
+    { address = 0x8238C0E0, size = 0x364 },
+    { address = 0x823B34D8, size = 0x228 },
+    { address = 0x823C4648, size = 0xD4 },
+]
+
+invalid_instructions = [
+    { data = 0x00000000, size = 4 }, # Padding
+]

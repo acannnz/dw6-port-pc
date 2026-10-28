@@ -1,0 +1,13 @@
+# File game & turunannya: WAJIB tidak pernah di-commit (hasil dump milik sendiri)
+private/
+*.iso
+*.7z
+*.xex
+*.xexp
+*.bin
+
+# Hasil build
+build/
+runtime/build/
+tools/build/
+*.log
